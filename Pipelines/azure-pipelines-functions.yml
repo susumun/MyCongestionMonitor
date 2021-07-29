@@ -1,0 +1,216 @@
+# Azure Resource Manager Deployment for Congestion Monitor resources
+# .NET Core Function App to Windows on Azure
+# Build a .NET Core function app and deploy it to Azure as a Windows function App.
+# Add steps that analyze code, save build artifacts, deploy, and more:
+# https://docs.microsoft.com/en-us/azure/devops/pipelines/languages/dotnet-core
+
+trigger:
+  branches:
+   include:
+     - master
+  paths:
+    include:
+      - ARMTemplates/*
+      - CongestionMonitorFunctionApp/*
+      - Pipelines/azure-pipelines-functions.yml
+
+pr:
+  branches:
+   include:
+     - master
+  paths:
+    include:
+      - ARMTemplates/*
+      - CongestionMonitorFunctionApp/*
+      - Pipelines/azure-pipelines-functions.yml
+
+variables:
+- group: cm-resource-param
+- name: vmImageName
+  value: 'windows-latest'
+
+stages:
+- stage: Build
+  displayName: 'Build Azure Functions App'
+
+  variables:
+    workingDirectory: '$(System.DefaultWorkingDirectory)/CongestionMonitorFunctionApp'
+    dotnetVersion: '3.1.x'
+    buildConfiguration: 'Release'
+
+  jobs:
+  - job: Build
+    displayName: 'Build Function App'
+    pool:
+      vmImage: $(vmImageName)
+
+    steps:
+    - task: UseDotNet@2
+      displayName: 'Install latest .NET Core SDK'
+      enabled: false
+      inputs:
+        packageType: sdk
+        version: $(dotnetVersion)
+        installationPath: $(Agent.ToolsDirectory)/dotnet
+
+    - task: DotNetCoreCLI@2
+      displayName: 'dotnet build'
+      inputs:
+        command: 'build'
+        projects: |
+          $(workingDirectory)/*.csproj
+        arguments: --output $(workingDirectory)/publish_output --configuration $(buildConfiguration)
+
+    - task: ArchiveFiles@2
+      displayName: 'Archive files'
+      inputs:
+        rootFolderOrFile: '$(workingDirectory)/publish_output'
+        includeRootFolder: false
+        archiveType: zip
+        archiveFile: $(Build.ArtifactStagingDirectory)/$(Build.BuildId).zip
+        replaceExistingArchive: true
+
+    - task: CopyFiles@2
+      displayName: 'Copy ARM Template files'
+      inputs:
+        SourceFolder: '$(System.DefaultWorkingDirectory)/ARMTemplates'
+        Contents: '**'
+        TargetFolder: '$(Build.ArtifactStagingDirectory)'
+
+    - publish: $(Build.ArtifactStagingDirectory)
+      artifact: drop
+
+- stage: Deploy_Staging
+  displayName: 'Deploy Staging'
+  dependsOn: Build
+  condition: and(succeeded(), ne(variables['Build.Reason'], 'PullRequest'))
+
+  jobs:
+  - deployment: Deploy_Staging
+    displayName: 'Deploy Function App for Staging'
+    variables:
+      slotStagingName: 'staging'
+    pool:
+      vmImage: $(vmImageName)
+    environment: 'development'
+    strategy:
+      runOnce:
+        deploy:
+          steps:
+          - task: AzureResourceManagerTemplateDeployment@3
+            displayName: 'Run ARM Deployment'
+            inputs:
+              deploymentScope: 'Resource Group'
+              azureResourceManagerConnection: $(azureServiceConnectionName)
+              subscriptionId: $(azureSubscriptionId)
+              action: 'Create Or Update Resource Group'
+              resourceGroupName: $(resourceName)
+              location: $(locationName)
+              templateLocation: 'Linked artifact'
+              csmFile: '$(Pipeline.Workspace)/drop/template.json'
+              csmParametersFile: '$(Pipeline.Workspace)/drop/parameters.json'
+              overrideParameters: -sites_cm_repositoryToken $(repositoryToken)
+              deploymentMode: 'Incremental'
+              deploymentName: 'cm-arm-deployment'
+              deploymentOutputs: 'cm-arm-deployment-outputs'
+
+          - task: PowerShell@2
+            name: OutputValues
+            displayName: 'Get deployent outputs'
+            inputs:
+              pwsh: true
+              targetType: 'inline'
+              script: |
+                # Write-Host '$(cm-arm-deployment-outputs)'
+                $out=ConvertFrom-Json '$(cm-arm-deployment-outputs)'
+                $static_name=$out.staticwebName.value
+                $static_rul=$out.staticweb_Url.value
+                $func_name=$out.functionsappName.value
+                $func_rul=$out.functionsapp_Url.value
+                Write-Host "##vso[task.setvariable variable=staticwebName;isOutput=true]$static_name"
+                Write-Host "##vso[task.setvariable variable=staticweb_Url;isOutput=true]$static_rul"
+                Write-Host "##vso[task.setvariable variable=functionsappName;isOutput=true]$func_name"
+                Write-Host "##vso[task.setvariable variable=functionsapp_Url;isOutput=true]$func_rul"
+
+          - task: AzureFunctionApp@1
+            displayName: 'Azure functions app deploy'
+            inputs:
+              azureSubscription: $(azureServiceConnectionName)
+              resourceGroupName: $(resourceName)
+              appType: functionApp
+              appName: $(OutputValues.functionsappName)
+              package: '$(Pipeline.Workspace)/drop/$(Build.BuildId).zip'
+
+- stage: Deploy_Dev
+  displayName: 'Deploy Dev'
+  dependsOn: Build
+  condition: and(succeeded(), eq(variables['Build.Reason'], 'PullRequest'))
+
+  jobs:
+  - deployment: Deploy_Dev
+    displayName: 'Deploy Function App for Development'
+    variables:
+      slotDevName: 'dev'
+    pool:
+      vmImage: $(vmImageName)
+    environment: 'development-dev'
+    strategy:
+      runOnce:
+        deploy:
+          steps:
+          - task: AzureResourceManagerTemplateDeployment@3
+            displayName: 'Run ARM Deployment'
+            inputs:
+              deploymentScope: 'Resource Group'
+              azureResourceManagerConnection: $(azureServiceConnectionName)
+              subscriptionId: $(azureSubscriptionId)
+              action: 'Create Or Update Resource Group'
+              resourceGroupName: $(resourceName)
+              location: $(locationName)
+              templateLocation: 'Linked artifact'
+              csmFile: '$(Pipeline.Workspace)/drop/template.json'
+              csmParametersFile: '$(Pipeline.Workspace)/drop/parameters.json'
+              overrideParameters: -sites_cm_repositoryToken $(repositoryToken)
+              deploymentMode: 'Incremental'
+              deploymentName: 'cm-arm-deployment'
+              deploymentOutputs: 'cm-arm-deployment-outputs'
+
+          - task: PowerShell@2
+            name: OutputValues
+            displayName: 'Get deployent outputs'
+            inputs:
+              pwsh: true
+              targetType: 'inline'
+              script: |
+                # Write-Host '$(cm-arm-deployment-outputs)'
+                $out=ConvertFrom-Json '$(cm-arm-deployment-outputs)'
+                $static_name=$out.staticwebName.value
+                $static_rul=$out.staticweb_Url.value
+                $func_name=$out.functionsappName.value
+                $func_rul=$out.functionsapp_Url.value
+                Write-Host "##vso[task.setvariable variable=staticwebName;isOutput=true]$static_name"
+                Write-Host "##vso[task.setvariable variable=staticweb_Url;isOutput=true]$static_rul"
+                Write-Host "##vso[task.setvariable variable=functionsappName;isOutput=true]$func_name"
+                Write-Host "##vso[task.setvariable variable=functionsapp_Url;isOutput=true]$func_rul"
+
+          - task: AzureFunctionApp@1
+            displayName: 'Azure functions app deploy'
+            inputs:
+              azureSubscription: $(azureServiceConnectionName)
+              resourceGroupName: $(resourceName)
+              appType: functionApp
+              appName: $(OutputValues.functionsappName)
+              package: '$(Pipeline.Workspace)/drop/$(Build.BuildId).zip'
+              deployToSlotOrASE: true
+              slotName: $(slotDevName)
+
+          - task: PowerShell@2
+            displayName: 'Write a PR comment for GitHub'
+            inputs:
+              pwsh: true
+              targetType: 'inline'
+              script: |
+                $message1="Function App: $(OutputValues.functionsapp_Url)"
+                $message2="Static Web App: $(OutputValues.staticweb_Url)"
+                Write-Host "##vso[task.setvariable variable=GITHUB_COMMENT]$message1"
+                Write-Host "##vso[task.setvariable variable=GITHUB_COMMENT]$message2"

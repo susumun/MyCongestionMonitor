@@ -1,0 +1,69 @@
+# ARM Deployment for Congestion Monitor resources
+
+trigger: none
+pr: none
+
+variables:
+- group: cm-resource-param
+- name: vmImageName
+  value: 'ubuntu-latest'
+
+stages:
+- stage: Deployment
+  displayName: 'Deployment with ARM Template'
+  
+  jobs:
+  - job: Deploy
+    displayName: 'ARM Deployment'
+    variables:
+      workingDirectory: '$(System.DefaultWorkingDirectory)/ARMTemplates'
+    pool:
+      vmImage: $(vmImageName)
+
+    steps:
+    - task: AzureResourceManagerTemplateDeployment@3
+      displayName: 'Run ARM Deployment'
+      inputs:
+        deploymentScope: 'Resource Group'
+        azureResourceManagerConnection: $(azureServiceConnectionName)
+        subscriptionId: $(azureSubscriptionId)
+        action: 'Create Or Update Resource Group'
+        resourceGroupName: $(resourceName)
+        location: $(locationName)
+        templateLocation: 'Linked artifact'
+        csmFile: '$(workingDirectory)/template.json'
+        csmParametersFile: '$(workingDirectory)/parameters.json'
+        overrideParameters: -sites_cm_repositoryToken $(repositoryToken)
+        deploymentMode: 'Incremental'
+        deploymentName: 'cm-arm-deployment'
+        deploymentOutputs: 'cm-arm-deployment-outputs'
+
+    - task: PowerShell@2
+      displayName: 'get deployent outputs'
+      enabled: true
+      inputs:
+        pwsh: true
+        targetType: 'inline'
+        script: |
+          # Write-Host '$(cm-arm-deployment-outputs)'
+          $out=ConvertFrom-Json '$(cm-arm-deployment-outputs)'
+          $static_name=$out.staticwebName.value
+          $static_rul=$out.staticweb_Url.value
+          $func_name=$out.functionsappName.value
+          $func_rul=$out.functionsapp_Url.value
+          Write-Host "##vso[task.setvariable variable=staticwebName;isOutput=true]$static_name"
+          Write-Host "##vso[task.setvariable variable=staticweb_Url;isOutput=true]$static_rul"
+          Write-Host "##vso[task.setvariable variable=functionsappName;isOutput=true]$func_name"
+          Write-Host "##vso[task.setvariable variable=functionsapp_Url;isOutput=true]$func_rul"
+
+    - task: AzureCLI@2
+      displayName: 'Set AppSettings to Static Web App'
+      enabled: false
+      inputs:
+        azureSubscription: $(azureServiceConnectionName)
+        scriptType: 'pscore'
+        scriptLocation: 'inlineScript'
+        inlineScript: |
+          Write-Host '$(staticwebName)'
+          Write-Host '$(functionsapp_Url)'
+          az staticwebapp appsettings set -g '$(resourceName)' -n '$(staticwebName)' --setting-names VUE_APP_API_BASE_URL='$(functionsapp_Url)'
