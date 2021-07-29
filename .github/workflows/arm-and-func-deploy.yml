@@ -17,7 +17,7 @@ on:
       - '.github/workflows/arm-and-func-deploy.yml'
 
 env:
-  APP_NAME: 'mycongestionmonitor0729'
+  APP_NAME: 'mycmonitor0729'
   RESOURCEGROUP_NAME: 'HOL-SignalR'
   RESOURCEGROUP_LOCATION: 'japaneast'
   AZURE_FUNCTIONAPP_PACKAGE_PATH: 'CongestionMonitorFunctionApp'
